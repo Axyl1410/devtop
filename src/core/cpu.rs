@@ -53,3 +53,40 @@ impl CpuTracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpu_tracker_initialization() {
+        let tracker = CpuTracker::new(10);
+        assert_eq!(tracker.history_capacity, 10);
+        assert_eq!(tracker.global_history.len(), 10);
+        assert!(tracker.global_history.iter().all(|&v| v == 0.0));
+        assert!(tracker.per_core_history.is_empty());
+    }
+
+    #[test]
+    fn test_cpu_tracker_update_and_capping() {
+        let mut tracker = CpuTracker::new(5);
+        let per_core = vec![25.0, 50.0, 75.0, 120.0]; // 120.0 should be capped to 100.0
+
+        tracker.update(45.5, &per_core);
+
+        assert_eq!(tracker.global_history.len(), 5);
+        assert_eq!(*tracker.global_history.back().unwrap(), 45.5);
+
+        assert_eq!(tracker.per_core_history.len(), 4);
+        assert_eq!(*tracker.per_core_history[0].back().unwrap(), 25.0);
+        assert_eq!(*tracker.per_core_history[1].back().unwrap(), 50.0);
+        assert_eq!(*tracker.per_core_history[2].back().unwrap(), 75.0);
+        assert_eq!(*tracker.per_core_history[3].back().unwrap(), 100.0); // Capped at 100.0
+
+        // Test subsequent update shifts history
+        tracker.update(80.0, &vec![10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(tracker.global_history.len(), 5);
+        assert_eq!(*tracker.global_history.back().unwrap(), 80.0);
+        assert_eq!(*tracker.per_core_history[3].back().unwrap(), 40.0);
+    }
+}

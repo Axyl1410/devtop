@@ -76,3 +76,38 @@ impl MemoryTracker {
         self.cache_history.push_back(cache_bytes as f64);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_memory_tracker_initialization() {
+        let tracker = MemoryTracker::new(10);
+        assert_eq!(tracker.ram_history.len(), 10);
+        assert_eq!(tracker.swap_history.len(), 10);
+        assert_eq!(tracker.cache_history.len(), 10);
+        assert_eq!(tracker.total_bytes, 0);
+        assert_eq!(tracker.swap_total_bytes, 0);
+    }
+
+    #[test]
+    fn test_memory_tracker_update() {
+        let mut tracker = MemoryTracker::new(3);
+
+        let total_ram = 16 * 1024 * 1024 * 1024; // 16 GiB
+        let used_ram = 8 * 1024 * 1024 * 1024;   // 8 GiB
+        let cache_ram = 4 * 1024 * 1024 * 1024;  // 4 GiB
+        let swap_total = 8 * 1024 * 1024 * 1024; // 8 GiB
+        let swap_used = 1 * 1024 * 1024 * 1024;  // 1 GiB
+
+        tracker.update(used_ram, swap_used, cache_ram, total_ram, swap_total, 50.0, 12.5, 25.0);
+
+        assert_eq!(tracker.total_bytes, total_ram);
+        assert_eq!(tracker.swap_total_bytes, swap_total);
+        assert_eq!(tracker.ram_history.len(), 3);
+        assert_eq!(*tracker.ram_history.back().unwrap(), used_ram as f64);
+        assert_eq!(*tracker.swap_history.back().unwrap(), swap_used as f64);
+        assert_eq!(*tracker.cache_history.back().unwrap(), cache_ram as f64);
+    }
+}

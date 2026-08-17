@@ -147,3 +147,80 @@ pub fn build_process_tree(
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_proc(pid: u32, ppid: Option<u32>, name: &str, cpu: f32) -> ProcessHarvest {
+        ProcessHarvest {
+            pid,
+            parent_pid: ppid,
+            name: name.to_string(),
+            cpu_usage: cpu,
+            memory_bytes: 1024 * 1024 * 100,
+            virtual_memory_bytes: 1024 * 1024 * 500,
+            memory_percent: 5.0,
+            status: "Run".to_string(),
+            cmd: format!("{} --dev", name),
+            exe: format!("/usr/bin/{}", name),
+            cwd: "/home/dev".to_string(),
+            user: "axyl".to_string(),
+            run_time_secs: 300,
+            ports: vec![3000],
+            children: vec![],
+        }
+    }
+
+    #[test]
+    fn test_build_process_tree_hierarchy() {
+        // PID 1 (systemd) -> PID 100 (node) -> PID 200 (worker1), PID 201 (worker2)
+        let procs = vec![
+            dummy_proc(1, None, "systemd", 1.0),
+            dummy_proc(100, Some(1), "node", 20.0),
+            dummy_proc(200, Some(100), "worker1", 10.0),
+            dummy_proc(201, Some(100), "worker2", 5.0),
+        ];
+
+        let tree = build_process_tree(&procs, "");
+        assert_eq!(tree.len(), 4);
+
+        assert_eq!(tree[0].process.pid, 1);
+        assert_eq!(tree[0].depth, 0);
+        assert_eq!(tree[0].prefix, "");
+
+        assert_eq!(tree[1].process.pid, 100);
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[1].prefix, "└─ ");
+
+        assert_eq!(tree[2].process.pid, 200);
+        assert_eq!(tree[2].depth, 2);
+        assert_eq!(tree[2].prefix, "   ├─ ");
+
+        assert_eq!(tree[3].process.pid, 201);
+        assert_eq!(tree[3].depth, 2);
+        assert_eq!(tree[3].prefix, "   └─ ");
+    }
+
+    #[test]
+    fn test_build_process_tree_orphans_and_search() {
+        // PPID 999 does not exist in procs -> PID 50 becomes root
+        let procs = vec![
+            dummy_proc(50, Some(999), "vite", 15.0),
+            dummy_proc(60, Some(50), "esbuild", 2.0),
+        ];
+
+        let tree = build_process_tree(&procs, "");
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].process.pid, 50);
+        assert_eq!(tree[0].depth, 0);
+
+        // Search query filtering
+        let filtered = build_process_tree(&procs, "esbuild");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].process.name, "esbuild");
+
+        let port_filtered = build_process_tree(&procs, "3000");
+        assert_eq!(port_filtered.len(), 2);
+    }
+}

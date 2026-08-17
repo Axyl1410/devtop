@@ -76,3 +76,39 @@ pub fn send_signal_to_pid(pid: u32, signal: ProcessSignal) -> Result<(), String>
         Err("Signal sending is only supported on Unix-like systems".to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_signals_properties() {
+        assert_eq!(ProcessSignal::ALL.len(), 6);
+        assert_eq!(ProcessSignal::ALL[0], ProcessSignal::Term);
+        assert!(!ProcessSignal::Term.is_dangerous());
+        assert!(ProcessSignal::Kill.is_dangerous());
+
+        assert!(ProcessSignal::Term.name().contains("15"));
+        assert!(ProcessSignal::Kill.name().contains("9"));
+        assert!(!ProcessSignal::Term.description().is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_raw_signal_mapping() {
+        assert_eq!(ProcessSignal::Term.to_raw_signal(), libc::SIGTERM);
+        assert_eq!(ProcessSignal::Kill.to_raw_signal(), libc::SIGKILL);
+        assert_eq!(ProcessSignal::Int.to_raw_signal(), libc::SIGINT);
+        assert_eq!(ProcessSignal::Hup.to_raw_signal(), libc::SIGHUP);
+        assert_eq!(ProcessSignal::Stop.to_raw_signal(), libc::SIGSTOP);
+        assert_eq!(ProcessSignal::Cont.to_raw_signal(), libc::SIGCONT);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_send_signal_nonexistent_pid() {
+        // PID 4194304 is beyond standard Linux max PID -> should fail with error
+        let res = send_signal_to_pid(4_000_000, ProcessSignal::Term);
+        assert!(res.is_err());
+    }
+}

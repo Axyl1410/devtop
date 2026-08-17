@@ -178,3 +178,44 @@ fn parse_hex_addr(addr: &str) -> Option<(String, u16)> {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_hex_addr_ipv4() {
+        // 0100007F:0050 -> 127.0.0.1:80
+        let (ip, port) = parse_hex_addr("0100007F:0050").expect("Should parse valid IPv4 hex");
+        assert_eq!(ip, "127.0.0.1");
+        assert_eq!(port, 80);
+
+        // 00000000:0BB8 -> 0.0.0.0:3000
+        let (ip, port) = parse_hex_addr("00000000:0BB8").expect("Should parse valid IPv4 hex");
+        assert_eq!(ip, "0.0.0.0");
+        assert_eq!(port, 3000);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_hex_addr_ipv6() {
+        // ::1:8080
+        let (ip, port) = parse_hex_addr("00000000000000000000000001000000:1F90").expect("Should parse IPv6 localhost");
+        assert_eq!(ip, "::1");
+        assert_eq!(port, 8080);
+
+        // :::22
+        let (ip, port) = parse_hex_addr("00000000000000000000000000000000:0016").expect("Should parse IPv6 all");
+        assert_eq!(ip, "::");
+        assert_eq!(port, 22);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_hex_addr_invalid() {
+        assert!(parse_hex_addr("invalid").is_none());
+        assert!(parse_hex_addr("127.0.0.1:80").is_none());
+        assert!(parse_hex_addr("ZZZZZZZZ:0050").is_none());
+    }
+}

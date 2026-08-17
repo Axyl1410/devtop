@@ -151,26 +151,11 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         }
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
-        KeyCode::Char('1') => {
-            app.active_tab = ActiveTab::Overview;
-            app.show_process_detail = false;
-        }
-        KeyCode::Char('2') => {
-            app.active_tab = ActiveTab::Processes;
-            app.show_process_detail = false;
-        }
-        KeyCode::Char('3') => {
-            app.active_tab = ActiveTab::Ports;
-            app.show_process_detail = false;
-        }
-        KeyCode::Char('4') => {
-            app.active_tab = ActiveTab::StorageNetwork;
-            app.show_process_detail = false;
-        }
-        KeyCode::Char('5') | KeyCode::Char('?') => {
-            app.active_tab = ActiveTab::Help;
-            app.show_process_detail = false;
-        }
+        KeyCode::Char('1') => app.select_tab(0),
+        KeyCode::Char('2') => app.select_tab(1),
+        KeyCode::Char('3') => app.select_tab(2),
+        KeyCode::Char('4') => app.select_tab(3),
+        KeyCode::Char('5') | KeyCode::Char('?') => app.select_tab(4),
         KeyCode::Up | KeyCode::Char('k') => {
             app.prev_item();
         }

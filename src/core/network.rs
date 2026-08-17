@@ -116,3 +116,60 @@ impl NetworkTracker {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_network_tracker_initialization() {
+        let tracker = NetworkTracker::new(5);
+        assert_eq!(tracker.rx_history.len(), 5);
+        assert_eq!(tracker.tx_history.len(), 5);
+        assert_eq!(tracker.current_rx_speed, 0);
+        assert_eq!(tracker.current_tx_speed, 0);
+    }
+
+    #[test]
+    fn test_network_tracker_speed_computation() {
+        let mut tracker = NetworkTracker::new(5);
+
+        let ifaces_1 = vec![
+            ("eth0".to_string(), 1000u64, 500u64),
+            ("wlan0".to_string(), 2000u64, 1500u64),
+        ];
+
+        // First sample seeds previous totals -> speed should be 0
+        let res1 = tracker.update(3000, 2000, 1.0, &ifaces_1);
+        assert_eq!(tracker.current_rx_speed, 0);
+        assert_eq!(tracker.current_tx_speed, 0);
+        assert_eq!(res1[0].3, 0); // eth0 rx_speed
+        assert_eq!(res1[1].4, 0); // wlan0 tx_speed
+
+        // Second sample after 2.0 seconds
+        // eth0 received +2048 bytes (1024 B/s), transmitted +4096 bytes (2048 B/s)
+        // wlan0 received +4096 bytes (2048 B/s), transmitted +2048 bytes (1024 B/s)
+        // Total RX = 3000 + 6144 = 9144 (+6144 in 2s -> 3072 B/s)
+        let ifaces_2 = vec![
+            ("eth0".to_string(), 1000 + 2048, 500 + 4096),
+            ("wlan0".to_string(), 2000 + 4096, 1500 + 2048),
+        ];
+
+        let res2 = tracker.update(9144, 8144, 2.0, &ifaces_2);
+
+        assert_eq!(tracker.current_rx_speed, 3072);
+        assert_eq!(tracker.current_tx_speed, 3072);
+
+        // Check per-interface speeds
+        assert_eq!(res2[0].0, "eth0");
+        assert_eq!(res2[0].3, 1024); // rx speed = 2048 / 2.0 = 1024 B/s
+        assert_eq!(res2[0].4, 2048); // tx speed = 4096 / 2.0 = 2048 B/s
+
+        assert_eq!(res2[1].0, "wlan0");
+        assert_eq!(res2[1].3, 2048); // rx speed = 4096 / 2.0 = 2048 B/s
+        assert_eq!(res2[1].4, 1024); // tx speed = 2048 / 2.0 = 1024 B/s
+
+        // Verify history stored in KB/s
+        assert_eq!(*tracker.rx_history.back().unwrap(), 3072.0 / 1024.0); // 3.0 KB/s
+    }
+}

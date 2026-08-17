@@ -116,6 +116,20 @@ impl App {
         };
     }
 
+    pub fn select_tab(&mut self, tab_idx: usize) {
+        if self.show_process_detail {
+            self.show_process_detail = false;
+        }
+        self.active_tab = match tab_idx {
+            0 => ActiveTab::Overview,
+            1 => ActiveTab::Processes,
+            2 => ActiveTab::Ports,
+            3 => ActiveTab::StorageNetwork,
+            4 => ActiveTab::Help,
+            _ => self.active_tab,
+        };
+    }
+
     pub fn filtered_sorted_processes(&self) -> Vec<ProcessHarvest> {
         let mut list = self.core.get_processes();
 
@@ -441,5 +455,87 @@ impl App {
             self.refresh_rate_ms -= 250;
             self.set_status(&format!("Refresh interval: {}ms", self.refresh_rate_ms));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_initialization() {
+        let app = App::new();
+        assert_eq!(app.active_tab, ActiveTab::Overview);
+        assert_eq!(app.sort_by, SortBy::Cpu);
+        assert!(!app.sort_ascending);
+        assert!(!app.show_kill_confirm);
+        assert_eq!(app.selected_signal_idx, 0);
+        assert_eq!(app.refresh_rate_ms, 1000);
+    }
+
+    #[test]
+    fn test_app_tab_navigation() {
+        let mut app = App::new();
+
+        app.next_tab();
+        assert_eq!(app.active_tab, ActiveTab::Processes);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, ActiveTab::Ports);
+
+        app.prev_tab();
+        assert_eq!(app.active_tab, ActiveTab::Processes);
+
+        app.select_tab(3);
+        assert_eq!(app.active_tab, ActiveTab::StorageNetwork);
+    }
+
+    #[test]
+    fn test_app_sort_toggle() {
+        let mut app = App::new();
+        assert_eq!(app.sort_by, SortBy::Cpu);
+        assert!(!app.sort_ascending);
+
+        // Toggling same column flips direction
+        app.toggle_sort(SortBy::Cpu);
+        assert_eq!(app.sort_by, SortBy::Cpu);
+        assert!(app.sort_ascending);
+
+        // Switching to different column sets it to descending
+        app.toggle_sort(SortBy::Memory);
+        assert_eq!(app.sort_by, SortBy::Memory);
+        assert!(!app.sort_ascending);
+    }
+
+    #[test]
+    fn test_app_signal_selector_navigation() {
+        let mut app = App::new();
+        assert_eq!(app.selected_signal_idx, 0); // 15: SIGTERM
+
+        app.next_signal();
+        assert_eq!(app.selected_signal_idx, 1); // 9: SIGKILL
+
+        app.prev_signal();
+        assert_eq!(app.selected_signal_idx, 0);
+
+        // Wrap around backward
+        app.prev_signal();
+        assert_eq!(app.selected_signal_idx, ProcessSignal::ALL.len() - 1);
+
+        // Quick select
+        app.select_signal_by_index(2);
+        assert_eq!(app.selected_signal_idx, 2);
+    }
+
+    #[test]
+    fn test_app_refresh_rate_bounds() {
+        let mut app = App::new();
+        app.refresh_rate_ms = 1000;
+
+        app.increase_refresh_rate();
+        assert_eq!(app.refresh_rate_ms, 1500);
+
+        app.decrease_refresh_rate();
+        assert_eq!(app.refresh_rate_ms, 1250);
     }
 }

@@ -1650,3 +1650,52 @@ fn binary_unit_and_denom(bytes: u64) -> (&'static str, f64) {
         _ => ("TiB", TIB as f64),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn test_binary_unit_and_denom() {
+        assert_eq!(binary_unit_and_denom(0), ("B", 1.0));
+        assert_eq!(binary_unit_and_denom(500), ("B", 1.0));
+        assert_eq!(binary_unit_and_denom(1024), ("KiB", 1024.0));
+        assert_eq!(binary_unit_and_denom(1024 * 1024), ("MiB", 1024.0 * 1024.0));
+        assert_eq!(
+            binary_unit_and_denom(1024 * 1024 * 1024),
+            ("GiB", 1024.0 * 1024.0 * 1024.0)
+        );
+        assert_eq!(
+            binary_unit_and_denom(1024 * 1024 * 1024 * 1024),
+            ("TiB", 1024.0 * 1024.0 * 1024.0 * 1024.0)
+        );
+    }
+
+    #[test]
+    fn test_format_bytes_and_speed() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2048), "2.0 KiB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(format_bytes(16 * 1024 * 1024 * 1024), "16.0 GiB");
+        assert_eq!(format_speed(1024), "1.0 KiB/s");
+    }
+
+    #[test]
+    fn test_format_duration() {
+        assert_eq!(format_duration(45), "00:00:45");
+        assert_eq!(format_duration(3665), "01:01:05");
+        assert_eq!(format_duration(90065), "1d 01:01:05");
+    }
+
+    #[test]
+    fn test_history_to_points() {
+        let mut history = VecDeque::new();
+        history.push_back(10.0);
+        history.push_back(20.0);
+        history.push_back(30.0);
+
+        let points = history_to_points(&history);
+        assert_eq!(points, vec![(0.0, 10.0), (1.0, 20.0), (2.0, 30.0)]);
+    }
+}
