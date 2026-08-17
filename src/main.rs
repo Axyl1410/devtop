@@ -71,11 +71,32 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
-    // Modal popup keys
+    // Modal popup keys (Signal Selection & Kill Confirmation)
     if app.show_kill_confirm {
         match code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => app.confirm_kill(),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => app.cancel_kill(),
+            KeyCode::Up | KeyCode::Char('k') | KeyCode::Left | KeyCode::Char('h') => {
+                app.prev_signal();
+            }
+            KeyCode::Down
+            | KeyCode::Char('j')
+            | KeyCode::Right
+            | KeyCode::Char('l')
+            | KeyCode::Tab => {
+                app.next_signal();
+            }
+            KeyCode::BackTab => {
+                app.prev_signal();
+            }
+            KeyCode::Char('1') => app.select_signal_by_index(0), // 15: SIGTERM
+            KeyCode::Char('2') => app.select_signal_by_index(1), // 9: SIGKILL
+            KeyCode::Char('3') => app.select_signal_by_index(2), // 2: SIGINT
+            KeyCode::Char('4') => app.select_signal_by_index(3), // 1: SIGHUP
+            KeyCode::Char('5') => app.select_signal_by_index(4), // 19: SIGSTOP
+            KeyCode::Char('6') => app.select_signal_by_index(5), // 18: SIGCONT
+            KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_kill(),
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                app.cancel_kill()
+            }
             _ => {}
         }
         return;

@@ -1388,7 +1388,7 @@ fn render_help(_app: &App, frame: &mut Frame, area: Rect) {
         ),
         Line::from("   [c/m/p/n/u]           Sort directly by CPU, Memory, PID, Name, User"),
         Line::from("   [/]                   Filter/Search processes and ports"),
-        Line::from("   [x] or [k]            Terminate selected process / port (SIGKILL)"),
+        Line::from("   [x] or [k]            Transmit signal / Terminate process or port"),
         Line::from(""),
         Line::from(Span::styled(
             " GENERAL CONTROLS",
@@ -1444,44 +1444,122 @@ fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_kill_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(50, 25, area);
+    use crate::core::signals::ProcessSignal;
+
+    let popup_area = centered_rect(65, 50, area);
     frame.render_widget(Clear, popup_area);
 
     let default_target = (0, "Unknown".to_string());
     let (pid, name) = app.kill_target.as_ref().unwrap_or(&default_target);
 
+    let current_signal = ProcessSignal::ALL
+        .get(app.selected_signal_idx)
+        .copied()
+        .unwrap_or(ProcessSignal::Term);
+
+    let is_dangerous = current_signal.is_dangerous();
+    let border_color = if is_dangerous {
+        Color::Red
+    } else {
+        Color::Rgb(100, 120, 160)
+    };
+
+    let title_color = if is_dangerous {
+        Color::Red
+    } else {
+        Color::Rgb(130, 170, 210)
+    };
+
     let modal_block = Block::default()
-        .title(" [ Confirm Termination ] ")
-        .title_style(Style::default().fg(Color::Red).bold())
+        .title(" [ Transmit Signal / Terminate Process ] ")
+        .title_style(Style::default().fg(title_color).bold())
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(border_color));
 
-    let modal_text = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw(" Are you sure you want to terminate: "),
-            Span::styled(
-                format!("{} (PID: {})", name, pid),
-                Style::default().fg(Color::Rgb(200, 190, 150)).bold(),
-            ),
-            Span::raw("?"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  [ y / Enter ] Confirm SIGKILL  ",
-                Style::default().bg(Color::Red).fg(Color::White).bold(),
-            ),
-            Span::raw("   "),
-            Span::styled(
-                "  [ n / Esc ] Cancel  ",
-                Style::default().bg(Color::DarkGray).fg(Color::White),
-            ),
-        ]),
-    ];
+    let mut lines = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" Target: ", Style::default().fg(Color::Rgb(150, 170, 190)).bold()),
+        Span::styled(
+            format!("{} (PID: {})", name, pid),
+            Style::default().fg(Color::White).bold(),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            " Select Unix signal to transmit (Default: 15: SIGTERM):",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(Line::from(""));
 
-    let paragraph = Paragraph::new(modal_text)
+    for (idx, signal) in ProcessSignal::ALL.iter().enumerate() {
+        let is_selected = idx == app.selected_signal_idx;
+        let num = idx + 1;
+
+        if is_selected {
+            let bg_color = if signal.is_dangerous() {
+                Color::Red
+            } else {
+                Color::Rgb(45, 45, 55)
+            };
+            let text_color = Color::White;
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" ▶ [{}] {:<11}  —  {:<42} ", num, signal.name(), signal.description()),
+                    Style::default().fg(text_color).bg(bg_color).bold(),
+                ),
+            ]));
+        } else {
+            let sig_color = if signal.is_dangerous() {
+                Color::Rgb(210, 100, 100)
+            } else {
+                Color::Rgb(180, 180, 180)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("   [{}] ", num),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:<11} ", signal.name()),
+                    Style::default().fg(sig_color).bold(),
+                ),
+                Span::styled(
+                    format!(" —  {} ", signal.description()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            " [Enter/y] Send Signal ",
+            Style::default().bg(if is_dangerous { Color::Red } else { Color::Rgb(100, 120, 160) }).fg(Color::White).bold(),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            " [1-6] Quick Select ",
+            Style::default().fg(Color::Rgb(150, 170, 190)),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            " [↑/↓/Tab] Navigate ",
+            Style::default().fg(Color::Rgb(150, 170, 190)),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            " [Esc/n] Cancel ",
+            Style::default().bg(Color::DarkGray).fg(Color::White),
+        ),
+    ]));
+
+    let paragraph = Paragraph::new(lines)
         .alignment(Alignment::Center)
         .block(modal_block);
     frame.render_widget(paragraph, popup_area);

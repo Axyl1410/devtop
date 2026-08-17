@@ -33,6 +33,7 @@ pub struct App {
     pub search_query: String,
     pub show_kill_confirm: bool,
     pub kill_target: Option<(u32, String)>,
+    pub selected_signal_idx: usize,
     pub show_process_detail: bool,
     pub selected_detail_pid: Option<u32>,
     pub refresh_rate_ms: u64,
@@ -57,6 +58,7 @@ impl App {
             search_query: String::new(),
             show_kill_confirm: false,
             kill_target: None,
+            selected_signal_idx: 0,
             show_process_detail: false,
             selected_detail_pid: None,
             refresh_rate_ms: 1000,
@@ -333,6 +335,8 @@ impl App {
     }
 
     pub fn request_kill_selected(&mut self) {
+        self.selected_signal_idx = 0; // Default to SIGTERM (15) for safe graceful termination
+
         if self.show_process_detail {
             if let Some(pid) = self.selected_detail_pid {
                 if let Some(proc) = self.core.get_process_by_pid(pid) {
@@ -381,14 +385,37 @@ impl App {
         }
     }
 
+    pub fn next_signal(&mut self) {
+        self.selected_signal_idx = (self.selected_signal_idx + 1) % ProcessSignal::ALL.len();
+    }
+
+    pub fn prev_signal(&mut self) {
+        if self.selected_signal_idx == 0 {
+            self.selected_signal_idx = ProcessSignal::ALL.len() - 1;
+        } else {
+            self.selected_signal_idx -= 1;
+        }
+    }
+
+    pub fn select_signal_by_index(&mut self, idx: usize) {
+        if idx < ProcessSignal::ALL.len() {
+            self.selected_signal_idx = idx;
+        }
+    }
+
     pub fn confirm_kill(&mut self) {
         if let Some((pid, name)) = self.kill_target.take() {
-            match self.core.send_signal(pid, ProcessSignal::Kill) {
+            let signal = ProcessSignal::ALL
+                .get(self.selected_signal_idx)
+                .copied()
+                .unwrap_or(ProcessSignal::Term);
+
+            match self.core.send_signal(pid, signal) {
                 Ok(()) => {
-                    self.set_status(&format!("Sent SIGKILL to {} (PID {})", name, pid));
+                    self.set_status(&format!("Sent {} to {} (PID {})", signal.name(), name, pid));
                 }
                 Err(err) => {
-                    self.set_status(&format!("Failed to kill {} (PID {}): {}", name, pid, err));
+                    self.set_status(&format!("Failed to send signal to {} (PID {}): {}", name, pid, err));
                 }
             }
         }
@@ -399,7 +426,7 @@ impl App {
     pub fn cancel_kill(&mut self) {
         self.kill_target = None;
         self.show_kill_confirm = false;
-        self.set_status("Kill action canceled");
+        self.set_status("Signal transmission canceled");
     }
 
     pub fn increase_refresh_rate(&mut self) {
