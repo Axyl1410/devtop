@@ -1,19 +1,15 @@
 mod app;
-mod system;
+mod core;
 mod ui;
 
 use app::{ActiveTab, App, SortBy};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{
-    io::stdout,
-    panic,
-    time::Duration,
-};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::{io::stdout, panic, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup panic hook to restore terminal on unexpected panic
@@ -85,6 +81,23 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         return;
     }
 
+    // Process Detail drill-down mode keys
+    if app.show_process_detail {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Backspace => {
+                app.close_process_detail();
+            }
+            KeyCode::Char('k') | KeyCode::Char('x') => {
+                app.request_kill_selected();
+            }
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Search Mode input
     if app.search_mode {
         match code {
@@ -110,30 +123,87 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Esc => {
             if !app.search_query.is_empty() {
                 app.search_query.clear();
-                app.set_status("Filter cleared");
+                app.set_status("Search filter cleared");
             } else {
                 app.should_quit = true;
             }
         }
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
-        KeyCode::Char('1') => app.active_tab = ActiveTab::Overview,
-        KeyCode::Char('2') => app.active_tab = ActiveTab::Processes,
-        KeyCode::Char('3') => app.active_tab = ActiveTab::StorageNetwork,
-        KeyCode::Char('4') | KeyCode::Char('?') => app.active_tab = ActiveTab::Help,
+        KeyCode::Char('1') => {
+            app.active_tab = ActiveTab::Overview;
+            app.show_process_detail = false;
+        }
+        KeyCode::Char('2') => {
+            app.active_tab = ActiveTab::Processes;
+            app.show_process_detail = false;
+        }
+        KeyCode::Char('3') => {
+            app.active_tab = ActiveTab::Ports;
+            app.show_process_detail = false;
+        }
+        KeyCode::Char('4') => {
+            app.active_tab = ActiveTab::StorageNetwork;
+            app.show_process_detail = false;
+        }
+        KeyCode::Char('5') | KeyCode::Char('?') => {
+            app.active_tab = ActiveTab::Help;
+            app.show_process_detail = false;
+        }
         KeyCode::Up | KeyCode::Char('k') => {
-            if app.active_tab == ActiveTab::Processes {
-                app.prev_process();
-            }
+            app.prev_item();
         }
         KeyCode::Down | KeyCode::Char('j') => {
+            app.next_item();
+        }
+        KeyCode::PageUp => {
+            app.page_up(10);
+        }
+        KeyCode::PageDown => {
+            app.page_down(10);
+        }
+        KeyCode::Home | KeyCode::Char('g') => match app.active_tab {
+            ActiveTab::Processes => {
+                app.selected_process = 0;
+                app.scroll_offset = 0;
+            }
+            ActiveTab::Ports => {
+                app.selected_port = 0;
+                app.port_scroll_offset = 0;
+            }
+            _ => {}
+        },
+        KeyCode::End | KeyCode::Char('G') => match app.active_tab {
+            ActiveTab::Processes => {
+                let len = if app.tree_mode {
+                    app.tree_processes().len()
+                } else {
+                    app.filtered_sorted_processes().len()
+                };
+                if len > 0 {
+                    app.selected_process = len - 1;
+                }
+            }
+            ActiveTab::Ports => {
+                let len = app.filtered_ports().len();
+                if len > 0 {
+                    app.selected_port = len - 1;
+                }
+            }
+            _ => {}
+        },
+        KeyCode::Enter => {
+            app.open_process_detail();
+        }
+        KeyCode::Char('t') => {
             if app.active_tab == ActiveTab::Processes {
-                let len = app.filtered_sorted_processes().len();
-                app.next_process(len);
+                app.toggle_tree_mode();
             }
         }
         KeyCode::Char('/') => {
-            app.active_tab = ActiveTab::Processes;
+            if app.active_tab == ActiveTab::Overview || app.active_tab == ActiveTab::Help {
+                app.active_tab = ActiveTab::Processes;
+            }
             app.search_mode = true;
         }
         KeyCode::Char('s') => {
@@ -141,7 +211,8 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
                 SortBy::Cpu => SortBy::Memory,
                 SortBy::Memory => SortBy::Pid,
                 SortBy::Pid => SortBy::Name,
-                SortBy::Name => SortBy::Cpu,
+                SortBy::Name => SortBy::User,
+                SortBy::User => SortBy::Cpu,
             };
             app.toggle_sort(next_sort);
         }
@@ -149,10 +220,9 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('m') => app.toggle_sort(SortBy::Memory),
         KeyCode::Char('p') => app.toggle_sort(SortBy::Pid),
         KeyCode::Char('n') => app.toggle_sort(SortBy::Name),
-        KeyCode::Char('x') => {
-            if app.active_tab == ActiveTab::Processes {
-                app.request_kill_selected();
-            }
+        KeyCode::Char('u') => app.toggle_sort(SortBy::User),
+        KeyCode::Char('x') | KeyCode::Char('K') => {
+            app.request_kill_selected();
         }
         KeyCode::Char('+') | KeyCode::Char('=') => app.increase_refresh_rate(),
         KeyCode::Char('-') | KeyCode::Char('_') => app.decrease_refresh_rate(),
