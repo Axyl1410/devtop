@@ -1,4 +1,6 @@
 use crate::app::{ActiveTab, App, SortBy};
+use crate::core::collapse_dev_servers;
+use crate::core::detector::{FrameworkType, ProcessCategory, is_dev_port};
 use chrono::Local;
 use ratatui::{
     Frame,
@@ -128,7 +130,7 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(right_info, header_chunks[2]);
 }
 
-fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
+fn render_overview(app: &mut App, frame: &mut Frame, area: Rect) {
     let main_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -317,24 +319,28 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
     let ram_points_scaled: Vec<(f64, f64)> =
         ram_points.iter().map(|(x, y)| (*x, y / denom)).collect();
 
+    let ram_color = Color::Rgb(206, 130, 210); // magenta
+    let swap_color = Color::Rgb(232, 196, 80); // gold
+    let cache_color = Color::Rgb(80, 196, 196); // teal
+
     let mem_datasets = vec![
         Dataset::default()
             .name(ram_label)
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Rgb(160, 160, 160)))
+            .style(Style::default().fg(ram_color))
             .data(&ram_points_scaled),
         Dataset::default()
             .name(swap_label)
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Rgb(200, 190, 150)))
+            .style(Style::default().fg(swap_color))
             .data(&swap_points_scaled),
         Dataset::default()
             .name(cache_label)
             .marker(Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Rgb(180, 180, 180)))
+            .style(Style::default().fg(cache_color))
             .data(&cache_points_scaled),
     ];
 
@@ -350,10 +356,10 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
         .block(
             Block::default()
                 .title(mem_title)
-                .title_style(Style::default().fg(Color::Rgb(160, 160, 160)).bold())
+                .title_style(Style::default().fg(ram_color).bold())
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
-                .border_style(Style::default().fg(Color::Rgb(160, 160, 160))),
+                .border_style(Style::default().fg(ram_color)),
         )
         .x_axis(
             Axis::default()
@@ -373,13 +379,110 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
         );
     frame.render_widget(mem_chart, metrics_cols[1]);
 
-    // Quick Process Preview
+    // Bottom section: DEV SERVERS | Top Processes | Network+Disk
     let bottom_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .constraints([
+            Constraint::Percentage(35), // Dev Servers
+            Constraint::Percentage(35), // Top Active Processes
+            Constraint::Percentage(30), // Network & Disk
+        ])
         .split(main_rows[1]);
 
     let procs = app.filtered_sorted_processes();
+
+    // --- DEV SERVERS panel ---
+    // Next.js/Vite fork many workers that share cwd + "next" in argv.
+    // Collapse to one row per project; prefer the process that holds the listen port.
+    let mut dev_servers = collapse_dev_servers(procs.iter().filter(|p| {
+        matches!(
+            p.dev_meta.category,
+            ProcessCategory::DevServer | ProcessCategory::BuildTool
+        )
+    }));
+    dev_servers.truncate(8);
+
+    let dev_block = Block::default()
+        .title(" [ Dev Servers ] ")
+        .title_style(Style::default().fg(Color::Rgb(130, 210, 130)).bold())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(Color::Rgb(80, 130, 80)));
+
+    let dev_lines: Vec<Line> = if dev_servers.is_empty() {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No dev processes detected.",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(Span::styled(
+                "  Start a dev server to see it here.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    } else {
+        dev_servers
+            .iter()
+            .map(|(p, extra_workers)| {
+                let badge = p.dev_meta.badge_label();
+                let badge_color = p.dev_meta.badge_color();
+
+                let port_span =
+                    if let Some(port) = p.ports.iter().copied().filter(|&p| is_dev_port(p)).min() {
+                        Span::styled(
+                            format!(":{:<5} ", port),
+                            Style::default().fg(Color::Rgb(200, 190, 150)).bold(),
+                        )
+                    } else {
+                        Span::styled("  ─     ".to_string(), Style::default().fg(Color::DarkGray))
+                    };
+
+                let url_hint = if let Some(url) = &p.dev_meta.dev_url {
+                    Span::styled(
+                        format!(" {}", url),
+                        Style::default().fg(Color::Rgb(100, 150, 200)),
+                    )
+                } else {
+                    Span::raw("")
+                };
+
+                let proj = p.dev_meta.project_name.as_deref().unwrap_or(&p.name);
+
+                let workers_hint = if *extra_workers > 0 {
+                    Span::styled(
+                        format!(" +{}", extra_workers),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    Span::raw("")
+                };
+
+                Line::from(vec![
+                    Span::styled(" ● ", Style::default().fg(Color::Rgb(100, 200, 100))),
+                    port_span,
+                    Span::styled(
+                        format!("{:<10}", badge),
+                        Style::default().fg(badge_color).bold(),
+                    ),
+                    Span::styled(
+                        format!("{:<12}", truncate(proj, 12)),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        format!(" {:>4.1}%", p.cpu_usage),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    url_hint,
+                    workers_hint,
+                ])
+            })
+            .collect()
+    };
+
+    frame.render_widget(Paragraph::new(dev_lines).block(dev_block), bottom_cols[0]);
+
+    // --- Top Active Processes table ---
     let top_procs = procs.iter().take(6);
     let rows = top_procs.map(|p| {
         let port_badge = if !p.ports.is_empty() {
@@ -388,10 +491,17 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
             "-".to_string()
         };
 
+        let badge = p.dev_meta.badge_label();
+        let badge_color = if p.dev_meta.framework != FrameworkType::None {
+            p.dev_meta.framework.color()
+        } else {
+            Color::DarkGray
+        };
+
         Row::new(vec![
             Cell::from(p.pid.to_string()).style(Style::default().fg(Color::Rgb(180, 180, 180))),
-            Cell::from(p.user.clone()).style(Style::default().fg(Color::DarkGray)),
             Cell::from(port_badge).style(Style::default().fg(Color::Rgb(200, 190, 150))),
+            Cell::from(badge).style(Style::default().fg(badge_color).bold()),
             Cell::from(p.name.clone()).style(Style::default().bold()),
             Cell::from(format!("{:.1}%", p.cpu_usage)).style(Style::default().fg(
                 if p.cpu_usage > 50.0 {
@@ -409,16 +519,16 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
     let proc_table = Table::new(
         rows,
         [
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(10),
+            Constraint::Min(12),
             Constraint::Length(8),
             Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Min(15),
-            Constraint::Length(9),
-            Constraint::Length(11),
         ],
     )
     .header(
-        Row::new(vec!["PID", "User", "Port", "Name", "CPU %", "Memory"])
+        Row::new(vec!["PID", "Port", "Type", "Name", "CPU %", "Memory"])
             .style(Style::default().fg(Color::Rgb(200, 190, 150)).bold())
             .bottom_margin(1),
     )
@@ -430,7 +540,7 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
             .border_type(BorderType::Plain)
             .border_style(Style::default().fg(Color::DarkGray)),
     );
-    frame.render_widget(proc_table, bottom_cols[0]);
+    frame.render_widget(proc_table, bottom_cols[1]);
 
     // Network & Disk Quick Overview
     let net = app.core.get_network();
@@ -475,7 +585,7 @@ fn render_overview(app: &App, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    frame.render_widget(Paragraph::new(net_lines).block(net_box), bottom_cols[1]);
+    frame.render_widget(Paragraph::new(net_lines).block(net_box), bottom_cols[2]);
 }
 
 fn render_processes(app: &mut App, frame: &mut Frame, area: Rect) {
@@ -597,6 +707,7 @@ fn render_flat_table(app: &mut App, frame: &mut Frame, area: Rect) {
         Cell::from("PPID"),
         Cell::from(user_header),
         Cell::from("Port"),
+        Cell::from("TYPE"),
         Cell::from(name_header),
         Cell::from(cpu_header),
         Cell::from("Memory"),
@@ -654,11 +765,19 @@ fn render_flat_table(app: &mut App, frame: &mut Frame, area: Rect) {
                 "-".to_string()
             };
 
+            let badge = p.dev_meta.badge_label();
+            let badge_color = if p.dev_meta.is_dev_process() {
+                p.dev_meta.badge_color()
+            } else {
+                Color::DarkGray
+            };
+
             Row::new(vec![
                 Cell::from(format!("{}{}", prefix, p.pid)),
                 Cell::from(ppid_str).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(p.user.clone()).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(port_str).style(Style::default().fg(Color::Rgb(200, 190, 150))),
+                Cell::from(badge).style(Style::default().fg(badge_color).bold()),
                 Cell::from(p.name.clone()),
                 Cell::from(format!("{:.1}%", p.cpu_usage)).style(Style::default().fg(cpu_color)),
                 Cell::from(format_bytes(p.memory_bytes)),
@@ -682,12 +801,13 @@ fn render_flat_table(app: &mut App, frame: &mut Frame, area: Rect) {
             Constraint::Length(8),  // PPID
             Constraint::Length(10), // User
             Constraint::Length(8),  // Port
+            Constraint::Length(10), // TYPE (new)
             Constraint::Length(18), // Name
             Constraint::Length(9),  // CPU
             Constraint::Length(11), // Memory
             Constraint::Length(9),  // MEM %
             Constraint::Length(11), // Status
-            Constraint::Min(20),    // Command
+            Constraint::Min(18),    // Command
         ],
     )
     .header(header_row)
@@ -716,6 +836,7 @@ fn render_tree_table(app: &mut App, frame: &mut Frame, area: Rect) {
         Cell::from("Process Tree"),
         Cell::from("User"),
         Cell::from("Port"),
+        Cell::from("TYPE"),
         Cell::from("CPU %"),
         Cell::from("Memory"),
         Cell::from("MEM %"),
@@ -769,11 +890,19 @@ fn render_tree_table(app: &mut App, frame: &mut Frame, area: Rect) {
                 "-".to_string()
             };
 
+            let badge = p.dev_meta.badge_label();
+            let badge_color = if p.dev_meta.is_dev_process() {
+                p.dev_meta.badge_color()
+            } else {
+                Color::DarkGray
+            };
+
             Row::new(vec![
                 Cell::from(format!("{}{}", prefix, p.pid)),
                 Cell::from(tree_name),
                 Cell::from(p.user.clone()).style(Style::default().fg(Color::DarkGray)),
                 Cell::from(port_str).style(Style::default().fg(Color::Rgb(200, 190, 150))),
+                Cell::from(badge).style(Style::default().fg(badge_color).bold()),
                 Cell::from(format!("{:.1}%", p.cpu_usage)).style(Style::default().fg(cpu_color)),
                 Cell::from(format_bytes(p.memory_bytes)),
                 Cell::from(format!("{:.1}%", p.memory_percent)),
@@ -792,9 +921,10 @@ fn render_tree_table(app: &mut App, frame: &mut Frame, area: Rect) {
         rows,
         [
             Constraint::Length(9),  // PID
-            Constraint::Min(26),    // Process Tree
+            Constraint::Min(24),    // Process Tree
             Constraint::Length(10), // User
             Constraint::Length(8),  // Port
+            Constraint::Length(10), // TYPE
             Constraint::Length(9),  // CPU
             Constraint::Length(11), // Memory
             Constraint::Length(9),  // MEM %
@@ -960,7 +1090,7 @@ fn render_ports(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(table, chunks[1]);
 }
 
-fn render_process_detail(app: &App, frame: &mut Frame, area: Rect) {
+fn render_process_detail(app: &mut App, frame: &mut Frame, area: Rect) {
     let pid = match app.selected_detail_pid {
         Some(p) => p,
         None => {
@@ -990,12 +1120,20 @@ fn render_process_detail(app: &App, frame: &mut Frame, area: Rect) {
         ])
         .split(area);
 
-    // 1. Process Top Banner
+    // 1. Process Top Banner — shows name + framework badge
+    let badge_label = proc.dev_meta.badge_label();
+    let badge_color = proc.dev_meta.badge_color();
+    let banner_border_color = if proc.dev_meta.is_dev_process() {
+        badge_color
+    } else {
+        Color::Rgb(100, 100, 100)
+    };
     let banner_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(Color::Rgb(180, 180, 180)));
-    let banner_text = Paragraph::new(Line::from(vec![
+        .border_style(Style::default().fg(banner_border_color));
+
+    let mut banner_spans = vec![
         Span::styled(
             format!(" Process: {} ", proc.name),
             Style::default().fg(Color::Rgb(180, 180, 180)).bold(),
@@ -1004,16 +1142,30 @@ fn render_process_detail(app: &App, frame: &mut Frame, area: Rect) {
             format!("(PID: {}) ", proc.pid),
             Style::default().fg(Color::Rgb(200, 190, 150)).bold(),
         ),
-        Span::styled(
-            format!("Status: {} ", proc.status),
-            Style::default().fg(Color::Rgb(130, 170, 210)),
-        ),
-        Span::styled(
-            format!("Uptime: {} ", format_duration(proc.run_time_secs)),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]))
-    .block(banner_block);
+    ];
+    if !badge_label.is_empty() {
+        banner_spans.push(Span::styled(
+            format!(" {} ", badge_label),
+            Style::default().fg(Color::Black).bg(badge_color).bold(),
+        ));
+        banner_spans.push(Span::raw(" "));
+    }
+    banner_spans.push(Span::styled(
+        format!("Status: {} ", proc.status),
+        Style::default().fg(Color::Rgb(130, 170, 210)),
+    ));
+    banner_spans.push(Span::styled(
+        format!("Uptime: {} ", format_duration(proc.run_time_secs)),
+        Style::default().fg(Color::DarkGray),
+    ));
+    if let Some(url) = &proc.dev_meta.dev_url {
+        banner_spans.push(Span::styled(
+            format!(" → {} ", url),
+            Style::default().fg(Color::Rgb(100, 160, 220)),
+        ));
+    }
+
+    let banner_text = Paragraph::new(Line::from(banner_spans)).block(banner_block);
     frame.render_widget(banner_text, chunks[0]);
 
     // 2. Metrics Grid
@@ -1091,7 +1243,10 @@ fn render_process_detail(app: &App, frame: &mut Frame, area: Rect) {
             .join(", ")
     };
 
-    let sys_lines = vec![
+    let runtime_label = proc.dev_meta.runtime.label();
+    let project_label = proc.dev_meta.project_name.as_deref().unwrap_or("-");
+
+    let mut sys_lines = vec![
         Line::from(vec![
             Span::styled(" User / Owner: ", Style::default().bold()),
             Span::raw(&proc.user),
@@ -1111,6 +1266,24 @@ fn render_process_detail(app: &App, frame: &mut Frame, area: Rect) {
             Span::raw(if proc.cwd.is_empty() { "-" } else { &proc.cwd }),
         ]),
     ];
+
+    // Developer info rows (only shown when relevant)
+    if proc.dev_meta.is_dev_process() {
+        sys_lines.push(Line::from(vec![
+            Span::styled(" Runtime: ", Style::default().bold()),
+            Span::styled(
+                if runtime_label.is_empty() {
+                    "-"
+                } else {
+                    runtime_label
+                },
+                Style::default().fg(proc.dev_meta.runtime.color()),
+            ),
+            Span::styled("   Project: ", Style::default().bold()),
+            Span::styled(project_label, Style::default().fg(Color::White)),
+        ]));
+    }
+
     frame.render_widget(Paragraph::new(sys_lines).block(sys_block), grid_cols[1]);
 
     // 3. Hierarchy & Command
@@ -1480,18 +1653,19 @@ fn render_kill_modal(app: &App, frame: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled(" Target: ", Style::default().fg(Color::Rgb(150, 170, 190)).bold()),
+        Span::styled(
+            " Target: ",
+            Style::default().fg(Color::Rgb(150, 170, 190)).bold(),
+        ),
         Span::styled(
             format!("{} (PID: {})", name, pid),
             Style::default().fg(Color::White).bold(),
         ),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled(
-            " Select Unix signal to transmit (Default: 15: SIGTERM):",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        " Select Unix signal to transmit (Default: 15: SIGTERM):",
+        Style::default().fg(Color::DarkGray),
+    )]));
     lines.push(Line::from(""));
 
     for (idx, signal) in ProcessSignal::ALL.iter().enumerate() {
@@ -1506,12 +1680,15 @@ fn render_kill_modal(app: &App, frame: &mut Frame, area: Rect) {
             };
             let text_color = Color::White;
 
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" ▶ [{}] {:<11}  —  {:<42} ", num, signal.name(), signal.description()),
-                    Style::default().fg(text_color).bg(bg_color).bold(),
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    " ▶ [{}] {:<11}  —  {:<42} ",
+                    num,
+                    signal.name(),
+                    signal.description()
                 ),
-            ]));
+                Style::default().fg(text_color).bg(bg_color).bold(),
+            )]));
         } else {
             let sig_color = if signal.is_dangerous() {
                 Color::Rgb(210, 100, 100)
@@ -1540,7 +1717,14 @@ fn render_kill_modal(app: &App, frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled(
             " [Enter/y] Send Signal ",
-            Style::default().bg(if is_dangerous { Color::Red } else { Color::Rgb(100, 120, 160) }).fg(Color::White).bold(),
+            Style::default()
+                .bg(if is_dangerous {
+                    Color::Red
+                } else {
+                    Color::Rgb(100, 120, 160)
+                })
+                .fg(Color::White)
+                .bold(),
         ),
         Span::raw("  "),
         Span::styled(
@@ -1648,6 +1832,17 @@ fn binary_unit_and_denom(bytes: u64) -> (&'static str, f64) {
         b if b < GIB => ("MiB", MIB as f64),
         b if b < TIB => ("GiB", GIB as f64),
         _ => ("TiB", TIB as f64),
+    }
+}
+
+/// Truncate a string to at most `max_chars` characters, appending `…` if truncated.
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
     }
 }
 

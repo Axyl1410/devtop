@@ -130,7 +130,7 @@ impl App {
         };
     }
 
-    pub fn filtered_sorted_processes(&self) -> Vec<ProcessHarvest> {
+    pub fn filtered_sorted_processes(&mut self) -> Vec<ProcessHarvest> {
         let mut list = self.core.get_processes();
 
         // Filter
@@ -167,7 +167,7 @@ impl App {
         list
     }
 
-    pub fn tree_processes(&self) -> Vec<ProcessTreeItem> {
+    pub fn tree_processes(&mut self) -> Vec<ProcessTreeItem> {
         let procs = self.core.get_processes();
         build_process_tree(&procs, &self.search_query)
     }

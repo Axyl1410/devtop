@@ -1,4 +1,5 @@
 pub mod cpu;
+pub mod detector;
 pub mod disks;
 pub mod memory;
 pub mod network;
@@ -8,11 +9,13 @@ pub mod process;
 pub mod signals;
 
 pub use cpu::{CpuHarvest, CpuTracker};
+#[allow(unused_imports)]
+pub use detector::{DetectorCache, DeveloperMeta, FrameworkType, ProcessCategory, RuntimeType};
 pub use disks::DiskHarvest;
 pub use memory::{MemoryHarvest, MemoryTracker};
 pub use network::{InterfaceHarvest, NetworkHarvest, NetworkTracker};
 pub use ports::{PortBinding, scan_listening_ports};
-pub use process::{ProcessHarvest, ProcessTreeItem, build_process_tree};
+pub use process::{ProcessHarvest, ProcessTreeItem, build_process_tree, collapse_dev_servers};
 pub use signals::{ProcessSignal, send_signal_to_pid};
 
 use os::GenericOsEngine;
@@ -35,6 +38,7 @@ pub struct SystemCore {
     pub cached_ports: Vec<PortBinding>,
     last_ports_refresh: Instant,
     last_refresh_time: Instant,
+    detector_cache: DetectorCache,
 }
 
 impl SystemCore {
@@ -119,6 +123,7 @@ impl SystemCore {
             cached_ports,
             last_ports_refresh: Instant::now(),
             last_refresh_time: Instant::now(),
+            detector_cache: DetectorCache::new(),
         }
     }
 
@@ -207,9 +212,12 @@ impl SystemCore {
             self.cached_ports = ports;
             self.last_ports_refresh = Instant::now();
         }
+
+        // 5. Evict stale manifest entries
+        self.detector_cache.evict_stale();
     }
 
-    pub fn get_processes(&self) -> Vec<ProcessHarvest> {
+    pub fn get_processes(&mut self) -> Vec<ProcessHarvest> {
         let total_mem = self.os_engine.sys.total_memory() as f32;
         // sysinfo returns cpu_usage() in unnormalized form (can exceed 100% on multi-core).
         // Normalize by dividing by core count → 0-100% of total system CPU, like bottom's default.
@@ -235,7 +243,9 @@ impl SystemCore {
             }
         }
 
-        self.os_engine
+        // Collect raw process data first (borrow of os_engine ends before detector_cache borrow)
+        let raw_procs: Vec<_> = self
+            .os_engine
             .sys
             .processes()
             .iter()
@@ -279,36 +289,88 @@ impl SystemCore {
                     .get(&pid_u32)
                     .cloned()
                     .unwrap_or_default();
-                let ports = pid_to_ports.get(&pid_u32).cloned().unwrap_or_default();
+                let mut ports = pid_to_ports.get(&pid_u32).cloned().unwrap_or_default();
+                ports.sort_unstable();
+                ports.dedup();
 
-                ProcessHarvest {
-                    pid: pid_u32,
-                    parent_pid: proc.parent().map(|p| p.as_u32()),
-                    name: proc.name().to_string_lossy().into_owned(),
-                    // Normalize: sysinfo reports 400% for a process using 100% of 4 cores.
-                    // Divide by num_cpus to get 0-100% of total system capacity.
-                    cpu_usage: (proc.cpu_usage() / num_cpus).min(100.0),
-                    memory_bytes: mem,
-                    virtual_memory_bytes: proc.virtual_memory(),
-                    memory_percent: mem_pct,
-                    status: format!("{:?}", proc.status()),
-                    cmd: if cmd_str.is_empty() {
-                        proc.name().to_string_lossy().into_owned()
-                    } else {
-                        cmd_str
-                    },
-                    exe: exe_str,
-                    cwd: cwd_str,
-                    user: user_name,
-                    run_time_secs: proc.run_time(),
+                let cmd_final = if cmd_str.is_empty() {
+                    proc.name().to_string_lossy().into_owned()
+                } else {
+                    cmd_str
+                };
+
+                (
+                    pid_u32,
+                    proc.parent().map(|p| p.as_u32()),
+                    proc.name().to_string_lossy().into_owned(),
+                    (proc.cpu_usage() / num_cpus).min(100.0),
+                    mem,
+                    proc.virtual_memory(),
+                    mem_pct,
+                    format!("{:?}", proc.status()),
+                    cmd_final,
+                    exe_str,
+                    cwd_str,
+                    user_name,
+                    proc.run_time(),
                     ports,
                     children,
-                }
+                )
             })
+            .collect();
+
+        // Now classify each process using the detector cache
+        raw_procs
+            .into_iter()
+            .map(
+                |(
+                    pid_u32,
+                    parent_pid,
+                    name,
+                    cpu_usage,
+                    memory_bytes,
+                    virtual_memory_bytes,
+                    memory_percent,
+                    status,
+                    cmd,
+                    exe,
+                    cwd,
+                    user,
+                    run_time_secs,
+                    ports,
+                    children,
+                )| {
+                    let dev_meta = detector::classify_process(
+                        &exe,
+                        &cmd,
+                        &cwd,
+                        &ports,
+                        &mut self.detector_cache,
+                    );
+                    ProcessHarvest {
+                        pid: pid_u32,
+                        parent_pid,
+                        name,
+                        cpu_usage,
+                        memory_bytes,
+                        virtual_memory_bytes,
+                        memory_percent,
+                        status,
+                        cmd,
+                        exe,
+                        cwd,
+                        user,
+                        run_time_secs,
+                        ports,
+                        children,
+                        dev_meta,
+                    }
+                },
+            )
             .collect()
     }
 
-    pub fn get_process_by_pid(&self, pid: u32) -> Option<ProcessHarvest> {
+    pub fn get_process_by_pid(&mut self, pid: u32) -> Option<ProcessHarvest> {
         self.get_processes().into_iter().find(|p| p.pid == pid)
     }
 
