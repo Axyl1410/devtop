@@ -145,9 +145,9 @@ impl FrameworkType {
             FrameworkType::Parcel => Color::Rgb(255, 145, 0),
             FrameworkType::Strapi => Color::Rgb(142, 118, 244), // strapi purple
             FrameworkType::NestJs => Color::Rgb(224, 35, 78),   // nest red
-            FrameworkType::Express => Color::Rgb(200, 200, 200),// express gray
+            FrameworkType::Express => Color::Rgb(200, 200, 200), // express gray
             FrameworkType::Hono => Color::Rgb(227, 96, 2),      // hono flame
-            FrameworkType::Fastify => Color::Rgb(240, 240, 240),// fastify white
+            FrameworkType::Fastify => Color::Rgb(240, 240, 240), // fastify white
             FrameworkType::Elysia => Color::Rgb(236, 72, 153),  // elysia pink
             FrameworkType::Laravel => Color::Rgb(245, 82, 71),  // laravel red
             FrameworkType::Rails => Color::Rgb(204, 0, 0),      // rails crimson
@@ -325,12 +325,27 @@ fn probe_manifest(cwd: &str) -> (Option<String>, Option<FrameworkType>) {
 
     // --- package.json ---
     let pkg_path = path.join("package.json");
+    let mut project_name = None;
+    let mut framework = None;
     if pkg_path.exists() {
         if let Ok(contents) = fs::read_to_string(&pkg_path) {
-            let name = extract_json_string_field(&contents, "name");
-            let framework = detect_framework_from_package_json(&contents);
-            return (name, framework);
+            project_name = extract_json_string_field(&contents, "name");
+            framework = detect_framework_from_package_json(&contents);
         }
+    }
+
+    // --- nuxt.config.* (common with pnpm when deps live only in the store) ---
+    if framework.is_none()
+        && (path.join("nuxt.config.ts").exists()
+            || path.join("nuxt.config.js").exists()
+            || path.join("nuxt.config.mjs").exists()
+            || path.join("nuxt.config.cjs").exists())
+    {
+        framework = Some(FrameworkType::Nuxt);
+    }
+
+    if project_name.is_some() || framework.is_some() {
+        return (project_name, framework);
     }
 
     // --- Cargo.toml ---
@@ -359,6 +374,55 @@ fn probe_manifest(cwd: &str) -> (Option<String>, Option<FrameworkType>) {
     (None, None)
 }
 
+/// True when argv/exe looks like a Nuxt / Nuxi process (incl. pnpm's `.pnpm/nuxt@…` layout).
+fn is_nuxt_cmd(cmd_lc: &str) -> bool {
+    cmd_lc.contains("nuxt")
+        || cmd_lc.contains("nuxi")
+        || cmd_lc.contains("@nuxt/")
+        || cmd_lc.contains(".nuxt/")
+        || (cmd_lc.contains(".pnpm/") && cmd_lc.contains("nuxt@"))
+        || cmd_lc.contains("/nuxt/bin/")
+        || cmd_lc.contains("nuxt.mjs")
+}
+
+fn is_pkg_manager_invocation(exe_lc: &str, cmd_lc: &str) -> bool {
+    exe_lc == "pnpm"
+        || exe_lc.ends_with("/pnpm")
+        || exe_lc == "npm"
+        || exe_lc.ends_with("/npm")
+        || exe_lc == "yarn"
+        || exe_lc.ends_with("/yarn")
+        || cmd_lc.starts_with("pnpm ")
+        || cmd_lc.starts_with("npm ")
+        || cmd_lc.starts_with("yarn ")
+        || cmd_lc.contains("/pnpm.cjs")
+        || cmd_lc.contains("/pnpm/bin/")
+        || cmd_lc.contains("/npm/cli.js")
+        || cmd_lc.contains("/yarn/bin/")
+        || cmd_lc.contains("/yarn.cjs")
+}
+
+fn pkg_manager_category(cmd_lc: &str, fw: FrameworkType) -> ProcessCategory {
+    if fw != FrameworkType::None {
+        if is_http_dev_framework(fw) {
+            ProcessCategory::DevServer
+        } else {
+            ProcessCategory::BuildTool
+        }
+    } else if cmd_lc.contains(" dev")
+        || cmd_lc.contains(" run dev")
+        || cmd_lc.contains(" serve")
+        || cmd_lc.contains(" run serve")
+    {
+        // `pnpm dev` — framework resolved from manifest (package.json / nuxt.config).
+        ProcessCategory::DevServer
+    } else if cmd_lc.contains(" build") || cmd_lc.contains(" test") {
+        ProcessCategory::BuildTool
+    } else {
+        ProcessCategory::RuntimeProcess
+    }
+}
+
 /// Detect framework from `package.json` content by scanning `dependencies`/`devDependencies`.
 fn detect_framework_from_package_json(json: &str) -> Option<FrameworkType> {
     // Check for config files first — more authoritative
@@ -378,7 +442,7 @@ fn detect_framework_from_package_json(json: &str) -> Option<FrameworkType> {
     if all.contains("\"@remix-run/") {
         return Some(FrameworkType::Remix);
     }
-    if all.contains("\"nuxt\"") || all.contains("\"nuxt3\"") {
+    if all.contains("\"nuxt\"") || all.contains("\"nuxt3\"") || all.contains("\"@nuxt/") {
         return Some(FrameworkType::Nuxt);
     }
     if all.contains("\"@sveltejs/kit\"") {
@@ -556,7 +620,7 @@ fn match_cli(exe: &str, cmd: &str) -> Option<CliMatch> {
             FrameworkType::Astro
         } else if cmd_lc.contains("remix") || cmd_lc.contains("@remix-run") {
             FrameworkType::Remix
-        } else if cmd_lc.contains("nuxt") {
+        } else if is_nuxt_cmd(&cmd_lc) {
             FrameworkType::Nuxt
         } else if cmd_lc.contains("svelte") || cmd_lc.contains("@sveltejs") {
             FrameworkType::SvelteKit
@@ -630,6 +694,16 @@ fn match_cli(exe: &str, cmd: &str) -> Option<CliMatch> {
 
     // ── Node.js with framework detection ────────────────────────────────
     if exe_lc == "node" || exe_lc.ends_with("/node") || exe_lc == "nodejs" {
+        // pnpm/npm/yarn are shell scripts that exec `node …/pnpm.cjs run dev`
+        if is_pkg_manager_invocation(&exe_lc, &cmd_lc) {
+            let fw = detect_node_framework(&cmd_lc);
+            return Some(CliMatch {
+                runtime: RuntimeType::Node,
+                framework: fw,
+                category: pkg_manager_category(&cmd_lc, fw),
+            });
+        }
+
         let fw = detect_node_framework(&cmd_lc);
         let cat = match fw {
             FrameworkType::NextJs
@@ -765,6 +839,10 @@ fn match_cli(exe: &str, cmd: &str) -> Option<CliMatch> {
 
 /// Detect Node.js framework from command arguments.
 fn detect_node_framework(cmd_lc: &str) -> FrameworkType {
+    // Nuxt bundles Vite — check Nuxt markers before generic `vite`.
+    if is_nuxt_cmd(cmd_lc) {
+        return FrameworkType::Nuxt;
+    }
     if cmd_lc.contains("next")
         && (cmd_lc.contains("dev") || cmd_lc.contains("start") || cmd_lc.contains("next-server"))
     {
@@ -775,8 +853,6 @@ fn detect_node_framework(cmd_lc: &str) -> FrameworkType {
         FrameworkType::Vite
     } else if cmd_lc.contains("astro") {
         FrameworkType::Astro
-    } else if cmd_lc.contains("nuxt") {
-        FrameworkType::Nuxt
     } else if cmd_lc.contains("remix") || cmd_lc.contains("@remix-run") {
         FrameworkType::Remix
     } else if cmd_lc.contains("svelte") || cmd_lc.contains("@sveltejs") {
@@ -814,14 +890,14 @@ fn detect_node_framework(cmd_lc: &str) -> FrameworkType {
 
 /// Ports reserved for databases or infrastructure daemons that are not HTTP dev servers.
 const DB_INFRA_PORTS: &[u16] = &[
-    5432,         // PostgreSQL
-    6379, 6380,   // Redis
-    3306, 33060,  // MySQL / MariaDB
+    5432, // PostgreSQL
+    6379, 6380, // Redis
+    3306, 33060, // MySQL / MariaDB
     27017, 27018, // MongoDB
-    9200, 9300,   // Elasticsearch
-    11211,        // Memcached
-    5672, 15672,  // RabbitMQ
-    2181, 9092,   // Zookeeper / Kafka
+    9200, 9300,  // Elasticsearch
+    11211, // Memcached
+    5672, 15672, // RabbitMQ
+    2181, 9092, // Zookeeper / Kafka
 ];
 
 /// User-facing HTTP/dev port: not a database, not a kernel ephemeral `listen(0)` socket.
@@ -875,7 +951,12 @@ fn is_http_server_entrypoint(cmd: &str, fw: FrameworkType) -> bool {
         }
         FrameworkType::Vite => c.contains("vite"),
         FrameworkType::Astro => c.contains("astro"),
-        FrameworkType::Nuxt => c.contains("nuxt"),
+        FrameworkType::Nuxt => {
+            is_nuxt_cmd(&c)
+                || (c.contains("pnpm") && (c.contains(" dev") || c.contains(" run dev")))
+                || c.contains("npm run dev")
+                || c.contains("yarn dev")
+        }
         FrameworkType::Remix => c.contains("remix"),
         FrameworkType::SvelteKit => c.contains("svelte-kit") || c.contains("vite"),
         FrameworkType::Wrangler => c.contains("wrangler"),
@@ -954,6 +1035,13 @@ pub fn classify_process(
                     };
                 }
             }
+        }
+    }
+
+    // Nuxt dev spawns Vite child processes — package.json says Nuxt, argv says Vite.
+    if framework == FrameworkType::Vite {
+        if manifest_fw == Some(FrameworkType::Nuxt) {
+            framework = FrameworkType::Nuxt;
         }
     }
 
@@ -1081,6 +1169,76 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_nuxt_via_pnpm_store_path() {
+        let cmd =
+            "node /home/dev/app/node_modules/.pnpm/nuxt@3.15.0/node_modules/nuxt/bin/nuxt.mjs dev";
+        let meta = classify_process("node", cmd, "", &[3000], &mut make_cache());
+        assert_eq!(meta.framework, FrameworkType::Nuxt);
+        assert_eq!(meta.category, ProcessCategory::DevServer);
+    }
+
+    #[test]
+    fn test_detect_nuxt_via_nuxi() {
+        let cmd = "node /home/dev/.pnpm/@nuxt+cli@3.22.0/node_modules/@nuxt/cli/bin/nuxi.mjs dev";
+        let meta = classify_process("node", cmd, "", &[3000], &mut make_cache());
+        assert_eq!(meta.framework, FrameworkType::Nuxt);
+    }
+
+    #[test]
+    fn test_nuxt_vite_worker_prefers_nuxt_from_manifest() {
+        let cwd = std::env::temp_dir().join(format!("devtop-nuxt-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&cwd);
+        std::fs::write(
+            cwd.join("package.json"),
+            r#"{"name":"my-nuxt","dependencies":{"nuxt":"^3.15.0"}}"#,
+        )
+        .unwrap();
+
+        let meta = classify_process(
+            "node",
+            "node node_modules/vite/bin/vite.js --port 3000",
+            cwd.to_str().unwrap(),
+            &[3000],
+            &mut make_cache(),
+        );
+        assert_eq!(meta.framework, FrameworkType::Nuxt);
+        assert_eq!(meta.project_name, Some("my-nuxt".to_string()));
+
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn test_pnpm_dev_without_nuxt_in_argv_uses_manifest() {
+        let cwd = std::env::temp_dir().join(format!("devtop-pnpm-nuxt-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&cwd);
+        std::fs::write(
+            cwd.join("package.json"),
+            r#"{"name":"www","scripts":{"dev":"nuxt dev"},"devDependencies":{"nuxt":"^3.15.0"}}"#,
+        )
+        .unwrap();
+
+        let cmd = "node /home/dev/.local/share/pnpm/.tools/pnpm/9.15.0/bin/pnpm.cjs run dev";
+        let meta = classify_process("node", cmd, cwd.to_str().unwrap(), &[], &mut make_cache());
+        assert_eq!(meta.framework, FrameworkType::Nuxt);
+        assert_eq!(meta.category, ProcessCategory::DevServer);
+
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn test_nuxt_cmd_beats_vite_in_argv() {
+        assert!(is_nuxt_cmd("node .nuxt/dist/server/index.mjs && vite"));
+        let meta = classify_process(
+            "node",
+            "node /app/.nuxt/dev/index.mjs",
+            "",
+            &[3000],
+            &mut make_cache(),
+        );
+        assert_eq!(meta.framework, FrameworkType::Nuxt);
+    }
+
+    #[test]
     fn test_detect_wrangler() {
         let meta = classify_process(
             "node",
@@ -1147,13 +1305,7 @@ mod tests {
 
     #[test]
     fn test_detect_strapi_port_1337() {
-        let meta = classify_process(
-            "node",
-            "strapi develop",
-            "",
-            &[1337],
-            &mut make_cache(),
-        );
+        let meta = classify_process("node", "strapi develop", "", &[1337], &mut make_cache());
         assert_eq!(meta.runtime, RuntimeType::Node);
         assert_eq!(meta.framework, FrameworkType::Strapi);
         assert_eq!(meta.category, ProcessCategory::DevServer);
